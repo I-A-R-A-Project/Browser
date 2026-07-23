@@ -1,8 +1,37 @@
+import os
+
 from PyQt6.QtCore import QUrl
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEnginePage
 
 from userscripts import UserScriptManager
+
+# Extensiones que NO queremos que Chromium navegue/descargue directamente:
+# las maneja MainWindow (zip/7z/epub se extraen y se muestran como
+# carpeta; rar se lista; pdf se abre con el visor nativo QtPdf en una
+# pestaña propia).
+SPECIAL_LOCAL_EXTS = (".zip", ".rar", ".7z", ".epub", ".pdf")
+
+
+class BrowserPage(QWebEnginePage):
+    """QWebEnginePage que intercepta la navegación (tanto la que dispara
+    el propio código como la que ocurre al hacer clic en un link, por
+    ejemplo dentro del listado nativo de una carpeta file://) hacia
+    archivos locales "especiales", para evitar que Chromium los trate
+    como una descarga o los muestre en blanco."""
+
+    def __init__(self, profile, tab, main_window):
+        super().__init__(profile, tab)
+        self.tab = tab
+        self.main_window = main_window
+
+    def acceptNavigationRequest(self, url: QUrl, nav_type, is_main_frame):
+        if is_main_frame and url.isLocalFile():
+            ext = os.path.splitext(url.toLocalFile())[1].lower()
+            if ext in SPECIAL_LOCAL_EXTS:
+                self.main_window.handle_special_local_file(self.tab, url.toLocalFile())
+                return False
+        return super().acceptNavigationRequest(url, nav_type, is_main_frame)
 
 
 class BrowserTab(QWebEngineView):
@@ -11,7 +40,7 @@ class BrowserTab(QWebEngineView):
         self.script_manager = script_manager
         self.main_window = main_window
 
-        page = QWebEnginePage(profile, self)
+        page = BrowserPage(profile, self, main_window)
         self.setPage(page)
 
         self.urlChanged.connect(self._on_url_changed)

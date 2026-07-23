@@ -1,6 +1,7 @@
 import os
+import re
 
-from PyQt6.QtWidgets import QMainWindow, QTabWidget, QToolBar, QLineEdit
+from PyQt6.QtWidgets import QMainWindow, QTabWidget, QToolBar, QLineEdit, QFileDialog
 from PyQt6.QtGui import QAction, QKeySequence, QShortcut
 from PyQt6.QtWebEngineCore import (
     QWebEngineProfile, QWebEngineSettings, QWebEngineDownloadRequest
@@ -17,8 +18,10 @@ from json_store import SidebarAppsStore, GamesStore
 from userscripts import UserScriptManager
 from downloads import DownloadManager
 from browser_tab import BrowserTab
+from pdf_tab import PdfTab
 from sidebar import SidebarRail, AppPanelOverlay, SidebarContainer
 from dialogs import ListDialog, DownloadsDialog, SettingsDialog
+import local_viewer
 
 
 class MainWindow(QMainWindow):
@@ -78,6 +81,14 @@ class MainWindow(QMainWindow):
         settings = profile.settings()
         settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)
         settings.setAttribute(QWebEngineSettings.WebAttribute.LocalStorageEnabled, True)
+        # Permite que las páginas cargadas desde file:// (por ejemplo un
+        # archivo .txt o un listado de carpeta) puedan referenciar otros
+        # recursos locales o remotos sin ser bloqueadas.
+        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, True)
+        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
+        # Visor de PDF integrado de Chromium (permite ver .pdf directamente
+        # en la pestaña en lugar de descargarlo).
+        settings.setAttribute(QWebEngineSettings.WebAttribute.PdfViewerEnabled, True)
         profile.downloadRequested.connect(self.on_download_requested)
         return profile
 
@@ -177,6 +188,8 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+D"), self, activated=self.toggle_bookmark)
         QShortcut(QKeySequence("Ctrl+H"), self, activated=self.show_history)
         QShortcut(QKeySequence("Ctrl+J"), self, activated=self.show_downloads)
+        QShortcut(QKeySequence("Ctrl+O"), self, activated=self.open_local_file)
+        QShortcut(QKeySequence("Ctrl+Shift+O"), self, activated=self.open_local_folder)
 
     # -- pestañas ---------------------------------------------------------
     def current_tab(self) -> BrowserTab:
@@ -216,10 +229,36 @@ class MainWindow(QMainWindow):
         self.address_bar.setCursorPosition(0)
         self._refresh_bookmark_icon(qurl.toString())
 
+    # Ruta de Windows (C:\..., C:/...) o Unix (/..., ~/...)
+    _WINDOWS_PATH_RE = re.compile(r"^[a-zA-Z]:[\\/]")
+
+    def _looks_like_local_path(self, text):
+        if text.startswith("file://"):
+            return True
+        if self._WINDOWS_PATH_RE.match(text):
+            return True
+        if text.startswith("/") or text.startswith("~"):
+            return True
+        return False
+
     def navigate_to_address(self):
         text = self.address_bar.text().strip()
         if not text:
             return
+
+        if self._looks_like_local_path(text):
+            if text.startswith("file://"):
+                local_path = QUrl(text).toLocalFile()
+            else:
+                local_path = os.path.expanduser(text)
+            # Si es uno de nuestros tipos especiales (pdf/zip/rar/7z/epub),
+            # BrowserPage.acceptNavigationRequest intercepta esta misma
+            # navegación y llama a handle_special_local_file; para el
+            # resto (carpetas, texto, html, imágenes...) Chromium la
+            # muestra directamente.
+            self.current_tab().setUrl(QUrl.fromLocalFile(local_path))
+            return
+
         if "." in text and " " not in text:
             if not text.startswith(("http://", "https://")):
                 text = "https://" + text
@@ -228,6 +267,102 @@ class MainWindow(QMainWindow):
             query = QUrl.toPercentEncoding(text).data().decode()
             url = QUrl(f"https://www.google.com/search?q={query}")
         self.current_tab().setUrl(url)
+
+    # -- abrir archivos/carpetas locales --------------------------------------
+    def open_local_file(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Abrir archivo")
+        if path:
+            self.open_path_in_new_tab(path)
+
+    def open_local_folder(self):
+        path = QFileDialog.getExistingDirectory(self, "Abrir carpeta")
+        if path:
+            self.open_path_in_new_tab(path)
+
+    def open_path_in_new_tab(self, path):
+        """Abre una ruta local (usada por el diálogo de Descargas y por los
+        selectores de archivo/carpeta) en una pestaña nueva."""
+        if os.path.splitext(path)[1].lower() == ".pdf":
+            self.open_pdf_tab(path)
+            return
+        tab = self.new_tab("about:blank")
+        tab.setUrl(QUrl.fromLocalFile(path))
+
+    def handle_special_local_file(self, tab, local_path):
+        """Llamado por BrowserPage cuando una pestaña de navegación (la
+        barra de direcciones, o un clic dentro del listado nativo de una
+        carpeta file://) intenta ir a un .pdf/.zip/.rar/.7z/.epub. Acá
+        decidimos cómo mostrarlo en lugar de dejar que Chromium lo trate
+        como una descarga."""
+        ext = os.path.splitext(local_path)[1].lower()
+        if ext == ".pdf":
+            # El PDF necesita un visor propio (QtPdf), así que se abre en
+            # una pestaña nueva y la pestaña que intentó navegar se deja
+            # tal cual estaba.
+            self.open_pdf_tab(local_path)
+            return
+        self._open_local_target(tab, local_path)
+
+    def open_pdf_tab(self, path):
+        """Abre un PDF en una pestaña propia con el visor nativo QtPdf."""
+        tab = PdfTab(path, self)
+        title = os.path.basename(path)
+        short = (title[:22] + "…") if len(title) > 22 else title
+        index = self.tabs.addTab(tab, short or "PDF")
+        self.tabs.setCurrentIndex(index)
+        file_url = tab.url().toString()
+        self.db.add_history(file_url, title)
+        return tab
+
+    def _open_local_target(self, tab, local_path):
+        """Decide cómo mostrar una ruta local que NO es un pdf. Los .zip
+        y .7z se descomprimen y se navegan como carpeta; los .rar se
+        listan (no se pueden extraer sin una herramienta externa); los
+        .epub se abren en su primer capítulo. El resto (carpetas, .txt,
+        .html, imágenes, etc.) se lo dejamos directamente a Chromium."""
+        ext = os.path.splitext(local_path)[1].lower()
+        try:
+            if ext == ".zip":
+                dest = local_viewer.extract_zip(local_path)
+                tab.setUrl(QUrl.fromLocalFile(dest))
+                return
+
+            if ext == ".7z":
+                dest = local_viewer.extract_7z(local_path)
+                if dest is None:
+                    tab.page().setHtml(
+                        local_viewer.render_missing_dependency(local_path, "py7zr"),
+                        QUrl.fromLocalFile(local_path),
+                    )
+                else:
+                    tab.setUrl(QUrl.fromLocalFile(dest))
+                return
+
+            if ext == ".rar":
+                try:
+                    html = local_viewer.render_rar_listing(local_path)
+                except ImportError:
+                    html = local_viewer.render_missing_dependency(
+                        local_path, "rarfile",
+                        "Además necesitás tener instalado `unrar` o `unar` en el sistema "
+                        "para que rarfile pueda leer el archivo.",
+                    )
+                tab.page().setHtml(html, QUrl.fromLocalFile(local_path))
+                return
+
+            if ext == ".epub":
+                target = local_viewer.extract_epub_root(local_path)
+                tab.setUrl(QUrl.fromLocalFile(target))
+                return
+        except Exception as e:
+            tab.page().setHtml(
+                local_viewer.render_error(local_path, f"Error al procesar el archivo: {e}"),
+                QUrl.fromLocalFile(local_path),
+            )
+            return
+
+        # Carpetas, .txt, .html, imágenes, etc.
+        tab.setUrl(QUrl.fromLocalFile(local_path))
 
     # -- zoom -----------------------------------------------------------------
     def adjust_zoom(self, delta):
@@ -282,7 +417,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Descargando: {item.filename}", 5000)
 
     def show_downloads(self):
-        dialog = DownloadsDialog(self.download_manager)
+        dialog = DownloadsDialog(self.download_manager, on_open=self.open_path_in_new_tab)
         dialog.exec()
 
     # -- ajustes / personalizaciones --------------------------------------------

@@ -1,12 +1,5 @@
 import os
-import ssl
 import urllib.request
-
-try:
-    import certifi
-    _SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
-except ImportError:
-    _SSL_CONTEXT = ssl.create_default_context()
 
 APP_NAME = "MiniBrowser"
 
@@ -19,12 +12,11 @@ ICONS_DIR = os.path.join(BASE_DIR, "icons")
 SIDEBAR_APPS_FILE = os.path.join(BASE_DIR, "sidebar_apps.json")
 GAMES_FILE = os.path.join(BASE_DIR, "games.json")
 
-# Carpeta donde se cachean los juegos offline (.zip descargados y
-# descomprimidos). Cada juego offline vive en su propia subcarpeta
-# GAMES_CACHE_DIR/<id>/
-GAMES_CACHE_DIR = os.path.join(BASE_DIR, "games_cache")
+# Carpeta donde se extraen (una sola vez) los .zip / .7z / .epub que se
+# abren desde el navegador, para poder navegarlos como si fueran carpetas.
+ARCHIVES_CACHE_DIR = os.path.join(BASE_DIR, "archivos_extraidos")
 
-for _dir in (BASE_DIR, USERSCRIPTS_DIR, PROFILE_STORAGE, ICONS_DIR, GAMES_CACHE_DIR):
+for _dir in (BASE_DIR, USERSCRIPTS_DIR, PROFILE_STORAGE, ICONS_DIR, ARCHIVES_CACHE_DIR):
     os.makedirs(_dir, exist_ok=True)
 
 
@@ -44,7 +36,7 @@ def ensure_icon_cached(url, path):
         req = urllib.request.Request(
             url, headers={"User-Agent": "Mozilla/5.0 (MiniBrowser icon cache)"}
         )
-        with urllib.request.urlopen(req, timeout=10, context=_SSL_CONTEXT) as resp:
+        with urllib.request.urlopen(req, timeout=10) as resp:
             data = resp.read()
         with open(path, "wb") as f:
             f.write(data)

@@ -4,7 +4,7 @@ import shutil
 from PyQt6.QtWidgets import (
     QApplication, QDialog, QListWidget, QListWidgetItem, QPushButton,
     QHBoxLayout, QVBoxLayout, QMessageBox, QFileDialog, QLabel, QWidget,
-    QLineEdit, QTabWidget, QCheckBox
+    QLineEdit, QTabWidget
 )
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtCore import Qt, QUrl, QTimer
@@ -67,17 +67,24 @@ class ListDialog(QDialog):
 # Diálogo de descargas
 # ---------------------------------------------------------------------------
 class DownloadsDialog(QDialog):
-    def __init__(self, download_manager: DownloadManager):
+    def __init__(self, download_manager: DownloadManager, on_open=None):
         super().__init__()
         self.setWindowTitle("Descargas")
         self.resize(560, 420)
         self.download_manager = download_manager
+        self.on_open = on_open
 
         layout = QVBoxLayout(self)
         self.list_widget = QListWidget()
+        self.list_widget.itemDoubleClicked.connect(lambda _item: self._open_selected())
         layout.addWidget(self.list_widget)
 
         btn_row = QHBoxLayout()
+        if on_open:
+            open_btn = QPushButton("Abrir")
+            open_btn.clicked.connect(self._open_selected)
+            btn_row.addWidget(open_btn)
+
         open_folder_btn = QPushButton("Abrir carpeta contenedora")
         open_folder_btn.clicked.connect(self._open_folder)
         btn_row.addWidget(open_folder_btn)
@@ -91,6 +98,13 @@ class DownloadsDialog(QDialog):
         self.timer.timeout.connect(self._refresh)
         self.timer.start(500)
         self._refresh()
+
+    def _open_selected(self):
+        item = self.list_widget.currentItem()
+        download_item = item.data(Qt.ItemDataRole.UserRole) if item else None
+        if download_item and self.on_open:
+            self.on_open(download_item.path)
+            self.accept()
 
     def _refresh(self):
         current_row = self.list_widget.currentRow()
@@ -186,21 +200,12 @@ class UserScriptsPanel(QWidget):
 # Panel genérico para editar una lista guardada en JSON (usado tanto para
 # las apps de barra lateral como para los juegos). Permite agregar,
 # eliminar, exportar e importar el archivo completo.
-#
-# Si support_offline_zip=True (usado para la lista de Juegos), agrega un
-# checkbox "Es un .zip para descomprimir (juego offline)": al tipear ahí
-# la URL de descarga directa, el item se guarda como kind="offline_zip" en vez
-# de un link directo. La primera vez que se "abre" ese juego (ver
-# main_window.show_games), el navegador descarga el .zip, lo descomprime
-# en caché y a partir de ahí abre siempre la copia local.
 # ---------------------------------------------------------------------------
 class JsonListEditorPanel(QWidget):
-    def __init__(self, store, info_text, name_placeholder, url_placeholder,
-                 on_change=None, support_offline_zip=False):
+    def __init__(self, store, info_text, name_placeholder, url_placeholder, on_change=None):
         super().__init__()
         self.store = store
         self.on_change = on_change
-        self.support_offline_zip = support_offline_zip
 
         layout = QVBoxLayout(self)
         info = QLabel(info_text)
@@ -225,20 +230,6 @@ class JsonListEditorPanel(QWidget):
         form_row.addWidget(self.url_input)
         layout.addLayout(form_row)
 
-        if self.support_offline_zip:
-            self.offline_checkbox = QCheckBox(
-                "Es un .zip para descomprimir (juego offline)"
-            )
-            layout.addWidget(self.offline_checkbox)
-            hint = QLabel(
-                "Marcá esto y pegá el enlace de descarga directa. Al abrirlo\n"
-                "por primera vez desde 🎮 Juegos, se descarga en caché y queda\n"
-                "apuntando al html adentro; las siguientes veces abre directo."
-            )
-            hint.setWordWrap(True)
-            hint.setStyleSheet("color: #777; font-size: 11px;")
-            layout.addWidget(hint)
-
         btn_row = QHBoxLayout()
         add_btn = QPushButton("Agregar")
         add_btn.clicked.connect(self._add_item)
@@ -262,18 +253,9 @@ class JsonListEditorPanel(QWidget):
     def _populate(self):
         self.list_widget.clear()
         for item in self.store.all():
-            list_item = QListWidgetItem(self._label_for(item))
+            list_item = QListWidgetItem(f'{item["name"]}  —  {item["url"]}')
             list_item.setData(Qt.ItemDataRole.UserRole, item["id"])
             self.list_widget.addItem(list_item)
-
-    def _label_for(self, item):
-        if item.get("kind") == "offline_zip":
-            if item.get("local_entry"):
-                status = "✅ listo (en caché)"
-            else:
-                status = "⏳ pendiente de descarga"
-            return f'{item["name"]}  —  {status}'
-        return f'{item["name"]}  —  {item["url"]}'
 
     def _add_item(self):
         name = self.name_input.text().strip()
@@ -281,18 +263,11 @@ class JsonListEditorPanel(QWidget):
         if not name or not url:
             QMessageBox.warning(self, "Faltan datos", "Completá nombre y URL.")
             return
-
-        if self.support_offline_zip and self.offline_checkbox.isChecked():
-            self.store.add_offline_zip(name, url)
-        else:
-            if not url.startswith(("http://", "https://")):
-                url = "https://" + url
-            self.store.add(name, url)
-
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+        self.store.add(name, url)
         self.name_input.clear()
         self.url_input.clear()
-        if self.support_offline_zip:
-            self.offline_checkbox.setChecked(False)
         self._populate()
         if self.on_change:
             self.on_change()
@@ -364,12 +339,10 @@ class SettingsDialog(QDialog):
                 games_store,
                 info_text=(
                     "Lista de juegos para el botón 🎮 Juegos. Se guardan en un archivo\n"
-                    "JSON: fácil de editar a mano, exportar o importar. También podés\n"
-                    "agregar juegos offline distribuidos como .zip (ver checkbox abajo)."
+                    "JSON: fácil de editar a mano, exportar o importar."
                 ),
                 name_placeholder="Nombre (ej: Cookie Clicker)",
-                url_placeholder="URL (o enlace de descarga del .zip si es offline)",
-                support_offline_zip=True,
+                url_placeholder="URL",
             ),
             "Juegos",
         )
