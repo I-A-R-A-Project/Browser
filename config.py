@@ -1,5 +1,4 @@
 import os
-import urllib.request
 
 APP_NAME = "MiniBrowser"
 
@@ -21,31 +20,9 @@ for _dir in (BASE_DIR, USERSCRIPTS_DIR, PROFILE_STORAGE, ICONS_DIR, ARCHIVES_CAC
 
 
 # ---------------------------------------------------------------------------
-# Cache de íconos (SVG) para las apps ancladas de la barra lateral
-# ---------------------------------------------------------------------------
-YT_MUSIC_ICON_URL = "https://upload.wikimedia.org/wikipedia/commons/6/6a/Youtube_Music_icon.svg"
-YT_MUSIC_ICON_PATH = os.path.join(ICONS_DIR, "youtube_music.svg")
-
-
-def ensure_icon_cached(url, path):
-    """Descarga el ícono SVG una sola vez y lo deja en cache local.
-    En llamadas siguientes, si el archivo ya existe, no vuelve a bajarlo."""
-    if os.path.exists(path):
-        return path
-    try:
-        req = urllib.request.Request(
-            url, headers={"User-Agent": "Mozilla/5.0 (MiniBrowser icon cache)"}
-        )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = resp.read()
-        with open(path, "wb") as f:
-            f.write(data)
-    except Exception as e:
-        print(f"No se pudo descargar/cachear el ícono ({url}): {e}")
-        return None
-    return path
-
-
+# Íconos para las apps ancladas de la barra lateral: el usuario elige el
+# archivo (svg/png/jpg/ico) a mano desde Ajustes -> Apps de barra lateral.
+# Se copian a ICONS_DIR y la ruta local se guarda en el item (icon_path).
 # ---------------------------------------------------------------------------
 # Valores por defecto para los archivos JSON (solo se usan la primera vez,
 # cuando el archivo todavía no existe)

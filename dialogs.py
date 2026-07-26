@@ -1,15 +1,16 @@
 import os
 import shutil
+import uuid
 
 from PyQt6.QtWidgets import (
     QApplication, QDialog, QListWidget, QListWidgetItem, QPushButton,
     QHBoxLayout, QVBoxLayout, QMessageBox, QFileDialog, QLabel, QWidget,
     QLineEdit, QTabWidget
 )
-from PyQt6.QtGui import QDesktopServices
-from PyQt6.QtCore import Qt, QUrl, QTimer
+from PyQt6.QtGui import QDesktopServices, QIcon
+from PyQt6.QtCore import Qt, QUrl, QTimer, QSize
 
-from config import USERSCRIPTS_DIR
+from config import USERSCRIPTS_DIR, ICONS_DIR
 from userscripts import UserScriptManager
 from downloads import DownloadManager
 
@@ -202,10 +203,12 @@ class UserScriptsPanel(QWidget):
 # eliminar, exportar e importar el archivo completo.
 # ---------------------------------------------------------------------------
 class JsonListEditorPanel(QWidget):
-    def __init__(self, store, info_text, name_placeholder, url_placeholder, on_change=None):
+    def __init__(self, store, info_text, name_placeholder, url_placeholder,
+                 on_change=None, allow_icon=False):
         super().__init__()
         self.store = store
         self.on_change = on_change
+        self.allow_icon = allow_icon
 
         layout = QVBoxLayout(self)
         info = QLabel(info_text)
@@ -238,6 +241,13 @@ class JsonListEditorPanel(QWidget):
         del_btn = QPushButton("Eliminar seleccionado")
         del_btn.clicked.connect(self._remove_selected)
         btn_row.addWidget(del_btn)
+
+        if self.allow_icon:
+            icon_btn = QPushButton("Ícono para seleccionado...")
+            icon_btn.setToolTip("Elegir una imagen (svg/png/jpg/ico) para el ítem seleccionado")
+            icon_btn.clicked.connect(self._set_icon_for_selected)
+            btn_row.addWidget(icon_btn)
+
         layout.addLayout(btn_row)
 
         io_row = QHBoxLayout()
@@ -255,6 +265,10 @@ class JsonListEditorPanel(QWidget):
         for item in self.store.all():
             list_item = QListWidgetItem(f'{item["name"]}  —  {item["url"]}')
             list_item.setData(Qt.ItemDataRole.UserRole, item["id"])
+            icon_path = item.get("icon_path")
+            if icon_path and os.path.exists(icon_path):
+                list_item.setIcon(QIcon(icon_path))
+                self.list_widget.setIconSize(QSize(20, 20))
             self.list_widget.addItem(list_item)
 
     def _add_item(self):
@@ -278,6 +292,33 @@ class JsonListEditorPanel(QWidget):
             return
         item_id = item.data(Qt.ItemDataRole.UserRole)
         self.store.remove(item_id)
+        self._populate()
+        if self.on_change:
+            self.on_change()
+
+    def _set_icon_for_selected(self):
+        item = self.list_widget.currentItem()
+        if not item:
+            QMessageBox.information(self, "Elegí un ítem", "Primero seleccioná un ítem de la lista.")
+            return
+        item_id = item.data(Qt.ItemDataRole.UserRole)
+
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Elegir ícono", "",
+            "Imágenes (*.svg *.png *.jpg *.jpeg *.ico)"
+        )
+        if not path:
+            return
+
+        ext = os.path.splitext(path)[1].lower()
+        dest = os.path.join(ICONS_DIR, f"{uuid.uuid4().hex}{ext}")
+        try:
+            shutil.copy(path, dest)
+        except Exception as e:
+            QMessageBox.critical(self, "Error al copiar el ícono", str(e))
+            return
+
+        self.store.update_item(item_id, icon_path=dest)
         self._populate()
         if self.on_change:
             self.on_change()
@@ -331,6 +372,7 @@ class SettingsDialog(QDialog):
                 name_placeholder="Nombre (ej: YouTube Music)",
                 url_placeholder="URL (ej: music.youtube.com)",
                 on_change=on_sidebar_change,
+                allow_icon=True,
             ),
             "Apps de barra lateral",
         )

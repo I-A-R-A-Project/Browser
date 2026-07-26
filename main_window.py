@@ -11,7 +11,6 @@ from PyQt6.QtCore import QUrl
 from config import (
     APP_NAME, USERSCRIPTS_DIR, DB_PATH, PROFILE_STORAGE,
     SIDEBAR_APPS_FILE, GAMES_FILE, DEFAULT_SIDEBAR_APPS, DEFAULT_GAMES,
-    YT_MUSIC_ICON_URL, YT_MUSIC_ICON_PATH, ensure_icon_cached,
 )
 from database import Database
 from json_store import SidebarAppsStore, GamesStore
@@ -42,9 +41,6 @@ class MainWindow(QMainWindow):
         self.script_manager.reload()
         self.download_manager = DownloadManager()
 
-        # Cachea el ícono SVG de YouTube Music (solo se descarga una vez)
-        yt_icon_path = ensure_icon_cached(YT_MUSIC_ICON_URL, YT_MUSIC_ICON_PATH)
-
         self.profile = self._build_profile()
 
         self.tabs = QTabWidget()
@@ -54,7 +50,10 @@ class MainWindow(QMainWindow):
         self.tabs.currentChanged.connect(self._on_current_tab_changed)
 
         # Riel de íconos: FIJO, docked, parte del layout normal (no flota).
-        self.rail = SidebarRail(icon_paths={"youtube_music": yt_icon_path})
+        # Cada app puede tener su propio ícono (elegido por el usuario desde
+        # Ajustes -> Apps de barra lateral); si no tiene, se muestran las
+        # iniciales del nombre.
+        self.rail = SidebarRail()
         self.rail.on_toggle = self._on_sidebar_app_clicked
         self.rail.rebuild(self.sidebar_apps_store.all())
 
@@ -120,14 +119,17 @@ class MainWindow(QMainWindow):
         self.addToolBar(toolbar)
 
         back_action = QAction("←", self)
+        back_action.setToolTip("Atras")
         back_action.triggered.connect(lambda: self.current_tab().back())
         toolbar.addAction(back_action)
 
         forward_action = QAction("→", self)
+        forward_action.setToolTip("Adelante")
         forward_action.triggered.connect(lambda: self.current_tab().forward())
         toolbar.addAction(forward_action)
 
         reload_action = QAction("⟳", self)
+        reload_action.setToolTip("Recargar pagina")
         reload_action.triggered.connect(lambda: self.current_tab().reload())
         toolbar.addAction(reload_action)
 
@@ -143,20 +145,22 @@ class MainWindow(QMainWindow):
         self.bookmark_action.triggered.connect(self.toggle_bookmark)
         toolbar.addAction(self.bookmark_action)
 
-        bookmarks_action = QAction("Marcadores", self)
+        bookmarks_action = QAction("🔖", self)
+        bookmarks_action.setToolTip("Marcadores")
         bookmarks_action.triggered.connect(self.show_bookmarks)
         toolbar.addAction(bookmarks_action)
 
-        games_action = QAction("🎮 Juegos", self)
+        games_action = QAction("🎮", self)
         games_action.setToolTip("Juegos")
         games_action.triggered.connect(self.show_games)
         toolbar.addAction(games_action)
 
-        history_action = QAction("Historial", self)
+        history_action = QAction("🕖", self)
+        history_action.setToolTip("Historial")
         history_action.triggered.connect(self.show_history)
         toolbar.addAction(history_action)
 
-        downloads_action = QAction("⬇", self)
+        downloads_action = QAction("📥", self)
         downloads_action.setToolTip("Descargas")
         downloads_action.triggered.connect(self.show_downloads)
         toolbar.addAction(downloads_action)

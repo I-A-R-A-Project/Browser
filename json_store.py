@@ -102,7 +102,7 @@ class JsonListStore:
                 "name": entry.get("name", "Sin nombre"),
                 "url": entry.get("url", ""),
             }
-            for extra_key in ("kind", "download_url", "local_entry"):
+            for extra_key in ("kind", "download_url", "local_entry", "icon_path"):
                 if extra_key in entry:
                     item[extra_key] = entry[extra_key]
             item.setdefault("kind", "link")

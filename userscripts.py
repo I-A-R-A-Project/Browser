@@ -24,6 +24,11 @@ class UserScript:
                 self.name = stripped.split("@name", 1)[1].strip()
             elif "@match" in stripped:
                 self.matches.append(stripped.split("@match", 1)[1].strip())
+            elif "@include" in stripped:
+                # Tratamos @include igual que @match: alcanza para los
+                # patrones típicos (URLs exactas o con *). No soporta
+                # @include con regex real (/.../), que Tampermonkey sí permite.
+                self.matches.append(stripped.split("@include", 1)[1].strip())
             elif "@run-at" in stripped:
                 self.run_at = stripped.split("@run-at", 1)[1].strip()
 
@@ -35,7 +40,8 @@ class UserScript:
     def to_qwebengine_script(self):
         script = QWebEngineScript()
         script.setName(self.name)
-        script.setSourceCode(self.code)
+        shim = "if (typeof unsafeWindow === 'undefined') { var unsafeWindow = window; }\n"
+        script.setSourceCode(shim + self.code)
         # MainWorld: el script comparte el contexto JS de la página (puede
         # leer/modificar variables de la página, igual que Tampermonkey en
         # modo "unsafeWindow"). Si preferís aislamiento, cambiar a ApplicationWorld.

@@ -9,11 +9,8 @@ from PyQt6.QtWebEngineCore import QWebEnginePage
 class SidebarRail(QWidget):
     WIDTH = 52
 
-    def __init__(self, icon_paths=None, parent=None):
+    def __init__(self, parent=None):
         super().__init__(parent)
-        # icon_paths: dict opcional {clave -> ruta de ícono} para casos
-        # especiales (ej: YouTube Music con su SVG cacheado)
-        self.icon_paths = icon_paths or {}
         self.buttons = {}     # app_id -> QToolButton
         self.on_toggle = None  # callback(app) asignado desde afuera
 
@@ -31,12 +28,9 @@ class SidebarRail(QWidget):
         self._layout.addStretch()
 
     def _icon_for_app(self, app):
-        name = (app["name"] or "").strip().lower()
-        url = (app["url"] or "").lower()
-        if "music.youtube.com" in url or name == "youtube music":
-            path = self.icon_paths.get("youtube_music")
-            if path and os.path.exists(path):
-                return QIcon(path)
+        path = app.get("icon_path")
+        if path and os.path.exists(path):
+            return QIcon(path)
         return None
 
     def rebuild(self, apps, active_app_id=None):
