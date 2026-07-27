@@ -1,7 +1,7 @@
 import os
 import re
 
-from PyQt6.QtWidgets import QMainWindow, QTabWidget, QToolBar, QLineEdit, QFileDialog
+from PyQt6.QtWidgets import QMainWindow, QTabWidget, QToolBar, QLineEdit, QFileDialog, QWidget, QApplication
 from PyQt6.QtGui import QAction, QKeySequence, QShortcut
 from PyQt6.QtWebEngineCore import (
     QWebEngineProfile, QWebEngineSettings, QWebEngineDownloadRequest
@@ -20,6 +20,7 @@ from browser_tab import BrowserTab
 from pdf_tab import PdfTab
 from sidebar import SidebarRail, AppPanelOverlay, SidebarContainer
 from dialogs import ListDialog, DownloadsDialog, SettingsDialog
+from new_tab_page import render_new_tab_page
 import local_viewer
 
 
@@ -48,6 +49,9 @@ class MainWindow(QMainWindow):
         self.tabs.setMovable(True)
         self.tabs.tabCloseRequested.connect(self.close_tab)
         self.tabs.currentChanged.connect(self._on_current_tab_changed)
+        self.tabs.tabBarClicked.connect(self._on_tab_bar_clicked)
+        self.tabs.tabBar().tabMoved.connect(self._on_tab_moved)
+        self._setup_plus_tab()
 
         # Riel de íconos: FIJO, docked, parte del layout normal (no flota).
         # Cada app puede tener su propio ícono (elegido por el usuario desde
@@ -60,6 +64,7 @@ class MainWindow(QMainWindow):
         # Panel de la app anclada: esto SÍ es overlay, flota por encima de
         # las pestañas sin modificar su tamaño.
         self.app_panel = AppPanelOverlay(self.profile)
+        self.app_panel.on_new_window_request = self.handle_new_window_request
 
         container = SidebarContainer(self.rail, self.tabs, self.app_panel)
         self.setCentralWidget(container)
@@ -67,7 +72,22 @@ class MainWindow(QMainWindow):
         self._build_toolbar()
         self._build_shortcuts()
 
-        self.new_tab("https://www.google.com")
+        self.new_tab()
+
+    def closeEvent(self, event):
+        pages = []
+        for view in self.app_panel.views.values():
+            pages.append(view.page())
+        for i in range(self.tabs.count()):
+            widget = self.tabs.widget(i)
+            if widget is not self.plus_widget and hasattr(widget, "page"):
+                pages.append(widget.page())
+
+        for page in pages:
+            page.deleteLater()
+
+        QApplication.processEvents()
+        super().closeEvent(event)
 
     # -- perfil con cookies persistentes y descargas -------------------------
     def _build_profile(self):
@@ -133,10 +153,6 @@ class MainWindow(QMainWindow):
         reload_action.triggered.connect(lambda: self.current_tab().reload())
         toolbar.addAction(reload_action)
 
-        new_tab_action = QAction("+", self)
-        new_tab_action.triggered.connect(lambda: self.new_tab())
-        toolbar.addAction(new_tab_action)
-
         self.address_bar = QLineEdit()
         self.address_bar.returnPressed.connect(self.navigate_to_address)
         toolbar.addWidget(self.address_bar)
@@ -199,20 +215,35 @@ class MainWindow(QMainWindow):
     def current_tab(self) -> BrowserTab:
         return self.tabs.currentWidget()
 
-    def new_tab(self, url="https://www.google.com"):
+    def new_tab(self, url=None):
+        """Si no se pasa url, se abre la página local de "nueva pestaña"
+        (buscador + accesos rápidos a marcadores) en vez de una web fija."""
         tab = BrowserTab(self.profile, self.script_manager, self)
-        index = self.tabs.addTab(tab, "Nueva pestaña")
+        insert_at = self.tabs.indexOf(self.plus_widget)
+        index = self.tabs.insertTab(insert_at, tab, "Nueva pestaña")
         self.tabs.setCurrentIndex(index)
-        tab.setUrl(QUrl(url))
+        if url:
+            tab.setUrl(QUrl(url))
+        else:
+            self._load_new_tab_page(tab)
         return tab
 
+    def _load_new_tab_page(self, tab):
+        html = render_new_tab_page(self.db.get_bookmarks())
+        tab.page().setHtml(html, QUrl("about:blank"))
+
     def close_tab(self, index):
-        if self.tabs.count() <= 1:
-            self.close()
+        if self.tabs.widget(index) is self.plus_widget:
             return
+        was_current = index == self.tabs.currentIndex()
         widget = self.tabs.widget(index)
         self.tabs.removeTab(index)
         widget.deleteLater()
+        if self.tabs.count() <= 1:
+            self.new_tab()
+            return
+        if was_current:
+            self.tabs.setCurrentIndex(max(0, index - 1))
 
     def update_tab_title(self, tab, title):
         index = self.tabs.indexOf(tab)
@@ -222,16 +253,40 @@ class MainWindow(QMainWindow):
 
     def _on_current_tab_changed(self, index):
         tab = self.tabs.widget(index)
-        if tab:
-            self.update_address_bar(tab, tab.url())
+        if tab is None or tab is self.plus_widget:
+            return
+        self.update_address_bar(tab, tab.url())
+
+    def _setup_plus_tab(self):
+        self.plus_widget = QWidget()
+        index = self.tabs.addTab(self.plus_widget, "+")
+        bar = self.tabs.tabBar()
+        bar.setTabButton(index, bar.ButtonPosition.RightSide, None)
+        bar.setTabButton(index, bar.ButtonPosition.LeftSide, None)
+
+    def _on_tab_bar_clicked(self, index):
+        if self.tabs.widget(index) is self.plus_widget:
+            self.new_tab()
+
+    def _on_tab_moved(self, from_index, to_index):
+        # Evita que arrastrando pestañas la "+" termine en el medio.
+        plus_index = self.tabs.indexOf(self.plus_widget)
+        last = self.tabs.count() - 1
+        if plus_index != last:
+            self.tabs.tabBar().moveTab(plus_index, last)
+
+    def handle_new_window_request(self, request):
+        tab = self.new_tab("about:blank")
+        request.openIn(tab.page())
 
     # -- barra de direcciones -----------------------------------------------
     def update_address_bar(self, tab, qurl: QUrl):
         if tab != self.current_tab():
             return
-        self.address_bar.setText(qurl.toString())
+        text = qurl.toString()
+        self.address_bar.setText("" if text == "about:blank" else text)
         self.address_bar.setCursorPosition(0)
-        self._refresh_bookmark_icon(qurl.toString())
+        self._refresh_bookmark_icon(text)
 
     # Ruta de Windows (C:\..., C:/...) o Unix (/..., ~/...)
     _WINDOWS_PATH_RE = re.compile(r"^[a-zA-Z]:[\\/]")

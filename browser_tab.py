@@ -40,8 +40,9 @@ class BrowserTab(QWebEngineView):
         self.script_manager = script_manager
         self.main_window = main_window
 
-        page = BrowserPage(profile, self, main_window)
+        page = QWebEnginePage(profile, self)
         self.setPage(page)
+        page.newWindowRequested.connect(self._on_new_window_requested)
 
         self.urlChanged.connect(self._on_url_changed)
         self.loadFinished.connect(self._on_load_finished)
@@ -60,6 +61,12 @@ class BrowserTab(QWebEngineView):
 
     def _on_title_changed(self, title):
         self.main_window.update_tab_title(self, title)
+
+    def _on_new_window_requested(self, request):
+        # Se dispara con "Abrir enlace en nueva pestaña", target="_blank",
+        # window.open(), etc. Sin este handler, Qt6 simplemente descarta
+        # el pedido y no pasa nada.
+        self.main_window.handle_new_window_request(request)
 
     def _inject_matching_userscripts(self, url):
         # Se recalculan en cada navegación: solo quedan cargados los

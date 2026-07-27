@@ -1,7 +1,7 @@
 import os
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QStackedWidget, QToolButton
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QStackedWidget, QToolButton, QLabel
 from PyQt6.QtGui import QIcon
-from PyQt6.QtCore import QUrl, QSize, QRect, QPropertyAnimation, QEasingCurve
+from PyQt6.QtCore import Qt, QUrl, QSize, QRect, QPropertyAnimation, QEasingCurve
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEnginePage
 
@@ -81,6 +81,10 @@ class AppPanelOverlay(QWidget):
         self.profile = profile
         self.views = {}  # app_id -> QWebEngineView
         self.active_app_id = None
+        # Callbacks asignados desde afuera (MainWindow):
+        self.on_new_window_request = None  # se llama con el request cuando
+                                            # una app pide abrir un link en
+                                            # una pestaña/ventana nueva
 
         self.setAutoFillBackground(True)
         self.setStyleSheet("AppPanelOverlay { background-color: #202124; }")
@@ -100,6 +104,7 @@ class AppPanelOverlay(QWidget):
             view = QWebEngineView()
             page = QWebEnginePage(self.profile, view)
             view.setPage(page)
+            page.newWindowRequested.connect(self._on_new_window_requested)
             view.setUrl(QUrl(app["url"]))
             self.views[app_id] = view
             self.stack.addWidget(view)
@@ -115,6 +120,13 @@ class AppPanelOverlay(QWidget):
 
     def is_open_for(self, app_id):
         return self.active_app_id == app_id
+
+    def _on_new_window_requested(self, request):
+        # Los links "abrir en nueva pestaña" / target="_blank" / window.open()
+        # dentro de una app de la barra lateral no deben abrirse adentro del
+        # panel angosto: los mandamos a una pestaña normal del navegador.
+        if self.on_new_window_request:
+            self.on_new_window_request(request)
 
     def _animate_to(self, target_w):
         g = self.geometry()
