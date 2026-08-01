@@ -15,7 +15,12 @@ GAMES_FILE = os.path.join(BASE_DIR, "games.json")
 # abren desde el navegador, para poder navegarlos como si fueran carpetas.
 ARCHIVES_CACHE_DIR = os.path.join(BASE_DIR, "archivos_extraidos")
 
-for _dir in (BASE_DIR, USERSCRIPTS_DIR, PROFILE_STORAGE, ICONS_DIR, ARCHIVES_CACHE_DIR):
+# Carpeta donde se descargan y descomprimen (una sola vez) los juegos
+# offline agregados como .zip. Cada juego tiene su propia subcarpeta
+# "game_<id>" con el .zip ya descomprimido adentro.
+GAMES_CACHE_DIR = os.path.join(BASE_DIR, "games_cache")
+
+for _dir in (BASE_DIR, USERSCRIPTS_DIR, PROFILE_STORAGE, ICONS_DIR, ARCHIVES_CACHE_DIR, GAMES_CACHE_DIR):
     os.makedirs(_dir, exist_ok=True)
 
 
@@ -27,12 +32,6 @@ for _dir in (BASE_DIR, USERSCRIPTS_DIR, PROFILE_STORAGE, ICONS_DIR, ARCHIVES_CAC
 # Valores por defecto para los archivos JSON (solo se usan la primera vez,
 # cuando el archivo todavía no existe)
 # ---------------------------------------------------------------------------
-DEFAULT_SIDEBAR_APPS = [
-    {"name": "YouTube Music", "url": "https://music.youtube.com"},
-]
+DEFAULT_SIDEBAR_APPS = []
 
-DEFAULT_GAMES = [
-    {"name": "Cookie Clicker", "url": "https://orteil.dashnet.org/cookieclicker/"},
-    {"name": "Universal Paperclips", "url": "https://www.decisionproblem.com/paperclips/"},
-    {"name": "Bitburner", "url": "https://bitburner-official.github.io/"},
-]
+DEFAULT_GAMES = []

@@ -5,12 +5,12 @@ import uuid
 from PyQt6.QtWidgets import (
     QApplication, QDialog, QListWidget, QListWidgetItem, QPushButton,
     QHBoxLayout, QVBoxLayout, QMessageBox, QFileDialog, QLabel, QWidget,
-    QLineEdit, QTabWidget
+    QLineEdit, QTabWidget, QCheckBox
 )
 from PyQt6.QtGui import QDesktopServices, QIcon
 from PyQt6.QtCore import Qt, QUrl, QTimer, QSize
 
-from config import USERSCRIPTS_DIR, ICONS_DIR
+from config import USERSCRIPTS_DIR, ICONS_DIR, GAMES_CACHE_DIR
 from userscripts import UserScriptManager
 from downloads import DownloadManager
 
@@ -204,11 +204,12 @@ class UserScriptsPanel(QWidget):
 # ---------------------------------------------------------------------------
 class JsonListEditorPanel(QWidget):
     def __init__(self, store, info_text, name_placeholder, url_placeholder,
-                 on_change=None, allow_icon=False):
+                 on_change=None, allow_icon=False, allow_offline_zip=False):
         super().__init__()
         self.store = store
         self.on_change = on_change
         self.allow_icon = allow_icon
+        self.allow_offline_zip = allow_offline_zip
 
         layout = QVBoxLayout(self)
         info = QLabel(info_text)
@@ -232,6 +233,15 @@ class JsonListEditorPanel(QWidget):
         form_row.addWidget(self.name_input)
         form_row.addWidget(self.url_input)
         layout.addLayout(form_row)
+
+        if self.allow_offline_zip:
+            self.offline_zip_checkbox = QCheckBox(
+                "Es un juego offline (.zip): se descarga y descomprime una "
+                "sola vez, después se abre el .html de adentro directamente."
+            )
+            layout.addWidget(self.offline_zip_checkbox)
+        else:
+            self.offline_zip_checkbox = None
 
         btn_row = QHBoxLayout()
         add_btn = QPushButton("Agregar")
@@ -263,7 +273,12 @@ class JsonListEditorPanel(QWidget):
     def _populate(self):
         self.list_widget.clear()
         for item in self.store.all():
-            list_item = QListWidgetItem(f'{item["name"]}  —  {item["url"]}')
+            if item.get("kind") == "offline_zip":
+                status = "✅ descargado" if item.get("local_entry") else "⬇ pendiente de descarga"
+                label = f'{item["name"]}  —  {status}  ({item.get("download_url", "")})'
+            else:
+                label = f'{item["name"]}  —  {item["url"]}'
+            list_item = QListWidgetItem(label)
             list_item.setData(Qt.ItemDataRole.UserRole, item["id"])
             icon_path = item.get("icon_path")
             if icon_path and os.path.exists(icon_path):
@@ -279,7 +294,13 @@ class JsonListEditorPanel(QWidget):
             return
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
-        self.store.add(name, url)
+
+        if self.offline_zip_checkbox and self.offline_zip_checkbox.isChecked():
+            self.store.add_offline_zip(name, url)
+            self.offline_zip_checkbox.setChecked(False)
+        else:
+            self.store.add(name, url)
+
         self.name_input.clear()
         self.url_input.clear()
         self._populate()
@@ -291,6 +312,10 @@ class JsonListEditorPanel(QWidget):
         if not item:
             return
         item_id = item.data(Qt.ItemDataRole.UserRole)
+        stored_item = self.store.get(item_id)
+        if stored_item and stored_item.get("kind") == "offline_zip":
+            cache_dir = os.path.join(GAMES_CACHE_DIR, f"game_{item_id}")
+            shutil.rmtree(cache_dir, ignore_errors=True)
         self.store.remove(item_id)
         self._populate()
         if self.on_change:
@@ -381,10 +406,15 @@ class SettingsDialog(QDialog):
                 games_store,
                 info_text=(
                     "Lista de juegos para el botón 🎮 Juegos. Se guardan en un archivo\n"
-                    "JSON: fácil de editar a mano, exportar o importar."
+                    "JSON: fácil de editar a mano, exportar o importar.\n"
+                    "Para juegos que son un .zip con un .html adentro, marcá el\n"
+                    "checkbox de abajo y pegá el link de descarga directa del .zip:\n"
+                    "se descarga y descomprime una sola vez, y de ahí en más se abre\n"
+                    "el .html cacheado en vez de volver a descargarlo."
                 ),
                 name_placeholder="Nombre (ej: Cookie Clicker)",
-                url_placeholder="URL",
+                url_placeholder="URL (o link de descarga del .zip si es offline)",
+                allow_offline_zip=True,
             ),
             "Juegos",
         )

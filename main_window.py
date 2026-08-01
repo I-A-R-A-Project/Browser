@@ -1,7 +1,10 @@
 import os
 import re
 
-from PyQt6.QtWidgets import QMainWindow, QTabWidget, QToolBar, QLineEdit, QFileDialog, QWidget, QApplication
+from PyQt6.QtWidgets import (
+    QMainWindow, QTabWidget, QToolBar, QLineEdit, QFileDialog, QWidget,
+    QApplication, QMessageBox,
+)
 from PyQt6.QtGui import QAction, QKeySequence, QShortcut
 from PyQt6.QtWebEngineCore import (
     QWebEngineProfile, QWebEngineSettings, QWebEngineDownloadRequest
@@ -11,6 +14,7 @@ from PyQt6.QtCore import QUrl
 from config import (
     APP_NAME, USERSCRIPTS_DIR, DB_PATH, PROFILE_STORAGE,
     SIDEBAR_APPS_FILE, GAMES_FILE, DEFAULT_SIDEBAR_APPS, DEFAULT_GAMES,
+    GAMES_CACHE_DIR,
 )
 from database import Database
 from json_store import SidebarAppsStore, GamesStore
@@ -21,6 +25,7 @@ from pdf_tab import PdfTab
 from sidebar import SidebarRail, AppPanelOverlay, SidebarContainer
 from dialogs import ListDialog, DownloadsDialog, SettingsDialog
 from new_tab_page import render_new_tab_page
+from offline_games import OfflineGameDownloader
 import local_viewer
 
 
@@ -41,6 +46,11 @@ class MainWindow(QMainWindow):
         self.script_manager.create_example_script()
         self.script_manager.reload()
         self.download_manager = DownloadManager()
+        # Descargas de juegos offline (.zip) en curso: game_id -> OfflineGameDownloader.
+        # Se guarda la referencia para que el QThread no se destruya a mitad
+        # de la descarga y para no permitir dos descargas simultáneas del
+        # mismo juego.
+        self._active_game_downloads = {}
 
         self.profile = self._build_profile()
 
@@ -96,6 +106,10 @@ class MainWindow(QMainWindow):
         profile.setCachePath(os.path.join(PROFILE_STORAGE, "cache"))
         profile.setPersistentCookiesPolicy(
             QWebEngineProfile.PersistentCookiesPolicy.ForcePersistentCookies
+        )
+        profile.setHttpUserAgent(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
         )
         settings = profile.settings()
         settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)
@@ -453,12 +467,63 @@ class MainWindow(QMainWindow):
 
     # -- juegos -----------------------------------------------------------------
     def show_games(self):
-        items = [(g["name"], g["url"]) for g in self.games_store.all()]
+        items = [(g["name"], g) for g in self.games_store.all()]
         dialog = ListDialog(
             "Juegos", items,
-            on_open=lambda url: self.new_tab(url),
+            on_open=self._open_game,
         )
         dialog.exec()
+
+    def _open_game(self, game):
+        """Abre un juego de la lista. Los juegos normales (kind="link")
+        se abren directo por URL. Los juegos offline (kind="offline_zip")
+        se abren desde el .html ya descomprimido en caché si existe; si
+        todavía no se descargaron, se descargan y descomprimen una sola
+        vez (las próximas veces se abre el html cacheado directamente,
+        sin volver a descargar nada)."""
+        if game.get("kind") == "offline_zip":
+            local_entry = game.get("local_entry")
+            if local_entry and os.path.exists(local_entry):
+                self.new_tab(QUrl.fromLocalFile(local_entry).toString())
+            else:
+                self._download_offline_game(game)
+        else:
+            self.new_tab(game["url"])
+
+    def _download_offline_game(self, game):
+        game_id = game["id"]
+        if game_id in self._active_game_downloads:
+            self.statusBar().showMessage(f"'{game['name']}' ya se está descargando…", 4000)
+            return
+
+        dest_dir = os.path.join(GAMES_CACHE_DIR, f"game_{game_id}")
+        downloader = OfflineGameDownloader(game_id, game["download_url"], dest_dir, self)
+        self._active_game_downloads[game_id] = downloader
+
+        downloader.progress.connect(self._on_offline_game_progress)
+        downloader.finished.connect(self._on_offline_game_finished)
+        downloader.error.connect(self._on_offline_game_error)
+
+        self.statusBar().showMessage(f"Descargando '{game['name']}'…", 0)
+        downloader.start()
+
+    def _on_offline_game_progress(self, received, total):
+        if total:
+            pct = int(received * 100 / total)
+            self.statusBar().showMessage(f"Descargando juego… {pct}%", 0)
+        else:
+            self.statusBar().showMessage(f"Descargando juego… {received // 1024} KB", 0)
+
+    def _on_offline_game_finished(self, game_id, entry_html):
+        self._active_game_downloads.pop(game_id, None)
+        self.games_store.set_local_entry(game_id, entry_html)
+        self.statusBar().showMessage("Juego descargado y listo.", 4000)
+        self.new_tab(QUrl.fromLocalFile(entry_html).toString())
+
+    def _on_offline_game_error(self, game_id, message):
+        self._active_game_downloads.pop(game_id, None)
+        self.statusBar().showMessage("Error al descargar el juego.", 5000)
+        QMessageBox.critical(self, "Error al descargar el juego", message)
 
     # -- historial --------------------------------------------------------------
     def show_history(self):
