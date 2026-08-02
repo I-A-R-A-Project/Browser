@@ -1,4 +1,5 @@
 import os
+import uuid
 
 from PyQt6.QtCore import QUrl
 from PyQt6.QtWebEngineWidgets import QWebEngineView
@@ -6,11 +7,18 @@ from PyQt6.QtWebEngineCore import QWebEnginePage
 
 from userscripts import UserScriptManager
 
+# Extensiones de video: se abren en VideoTab (reproductor nativo
+# QtMultimedia) en vez del <video> HTML5 de Chromium, porque muchas builds
+# de QtWebEngine no traen codecs propietarios (H.264/AAC) y el video se
+# queda con los controles trabados en 0:00 sin reproducir nada.
+VIDEO_EXTS = (".mp4", ".m4v", ".webm", ".mkv", ".avi", ".mov")
+
 # Extensiones que NO queremos que Chromium navegue/descargue directamente:
 # las maneja MainWindow (zip/7z/epub se extraen y se muestran como
 # carpeta; rar se lista; pdf se abre con el visor nativo QtPdf en una
-# pestaña propia).
-SPECIAL_LOCAL_EXTS = (".zip", ".rar", ".7z", ".epub", ".pdf")
+# pestaña propia; los videos se abren con QtMultimedia en una pestaña
+# propia).
+SPECIAL_LOCAL_EXTS = (".zip", ".rar", ".7z", ".epub", ".pdf") + VIDEO_EXTS
 
 
 class BrowserPage(QWebEnginePage):
@@ -40,6 +48,12 @@ class BrowserTab(QWebEngineView):
         self.script_manager = script_manager
         self.main_window = main_window
 
+        # Identifica todas las navegaciones que ocurren dentro de esta
+        # misma pestaña, para poder agruparlas como una sola "sesión" en
+        # el historial (en vez de perder el recorrido y quedarse solo
+        # con la última página).
+        self.session_id = uuid.uuid4().hex
+
         page = QWebEnginePage(profile, self)
         self.setPage(page)
         page.newWindowRequested.connect(self._on_new_window_requested)
@@ -47,6 +61,7 @@ class BrowserTab(QWebEngineView):
         self.urlChanged.connect(self._on_url_changed)
         self.loadFinished.connect(self._on_load_finished)
         self.titleChanged.connect(self._on_title_changed)
+        self.iconChanged.connect(self._on_icon_changed)
 
     def _on_url_changed(self, qurl: QUrl):
         self._inject_matching_userscripts(qurl.toString())
@@ -57,10 +72,13 @@ class BrowserTab(QWebEngineView):
             url = self.url().toString()
             title = self.title() or url
             if url and url != "about:blank":
-                self.main_window.db.add_history(url, title)
+                self.main_window.db.add_history(url, title, self.session_id)
 
     def _on_title_changed(self, title):
         self.main_window.update_tab_title(self, title)
+
+    def _on_icon_changed(self, icon):
+        self.main_window.update_tab_icon(self, icon)
 
     def _on_new_window_requested(self, request):
         # Se dispara con "Abrir enlace en nueva pestaña", target="_blank",

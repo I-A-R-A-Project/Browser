@@ -3,13 +3,13 @@ import re
 
 from PyQt6.QtWidgets import (
     QMainWindow, QTabWidget, QToolBar, QLineEdit, QFileDialog, QWidget,
-    QApplication, QMessageBox,
+    QApplication, QMessageBox, QMenu,
 )
 from PyQt6.QtGui import QAction, QKeySequence, QShortcut
 from PyQt6.QtWebEngineCore import (
     QWebEngineProfile, QWebEngineSettings, QWebEngineDownloadRequest
 )
-from PyQt6.QtCore import QUrl
+from PyQt6.QtCore import QUrl, Qt
 
 from config import (
     APP_NAME, USERSCRIPTS_DIR, DB_PATH, PROFILE_STORAGE,
@@ -20,10 +20,11 @@ from database import Database
 from json_store import SidebarAppsStore, GamesStore
 from userscripts import UserScriptManager
 from downloads import DownloadManager
-from browser_tab import BrowserTab
+from browser_tab import BrowserTab, VIDEO_EXTS
 from pdf_tab import PdfTab
+from video_tab import VideoTab
 from sidebar import SidebarRail, AppPanelOverlay, SidebarContainer
-from dialogs import ListDialog, DownloadsDialog, SettingsDialog
+from dialogs import ListDialog, DownloadsDialog, SettingsDialog, HistoryDialog
 from new_tab_page import render_new_tab_page
 from offline_games import OfflineGameDownloader
 import local_viewer
@@ -61,6 +62,8 @@ class MainWindow(QMainWindow):
         self.tabs.currentChanged.connect(self._on_current_tab_changed)
         self.tabs.tabBarClicked.connect(self._on_tab_bar_clicked)
         self.tabs.tabBar().tabMoved.connect(self._on_tab_moved)
+        self.tabs.tabBar().setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tabs.tabBar().customContextMenuRequested.connect(self._show_tab_context_menu)
         self._setup_plus_tab()
 
         # Riel de íconos: FIJO, docked, parte del layout normal (no flota).
@@ -92,6 +95,8 @@ class MainWindow(QMainWindow):
             widget = self.tabs.widget(i)
             if widget is not self.plus_widget and hasattr(widget, "page"):
                 pages.append(widget.page())
+            if widget is not self.plus_widget and isinstance(widget, VideoTab):
+                widget.stop()
 
         for page in pages:
             page.deleteLater()
@@ -122,6 +127,8 @@ class MainWindow(QMainWindow):
         # Visor de PDF integrado de Chromium (permite ver .pdf directamente
         # en la pestaña en lugar de descargarlo).
         settings.setAttribute(QWebEngineSettings.WebAttribute.PdfViewerEnabled, True)
+        # Descarga el favicon de cada sitio para poder mostrarlo en la pestaña.
+        settings.setAttribute(QWebEngineSettings.WebAttribute.AutoLoadIconsForPage, True)
         profile.downloadRequested.connect(self.on_download_requested)
         return profile
 
@@ -252,6 +259,8 @@ class MainWindow(QMainWindow):
         was_current = index == self.tabs.currentIndex()
         widget = self.tabs.widget(index)
         self.tabs.removeTab(index)
+        if isinstance(widget, VideoTab):
+            widget.stop()
         widget.deleteLater()
         if self.tabs.count() <= 1:
             self.new_tab()
@@ -263,7 +272,15 @@ class MainWindow(QMainWindow):
         index = self.tabs.indexOf(tab)
         if index != -1:
             short = (title[:22] + "…") if len(title) > 22 else title
-            self.tabs.setTabText(index, short or "Nueva pestaña")
+            text = short or "Nueva pestaña"
+            if hasattr(tab, "page") and tab.page().isAudioMuted():
+                text = "🔇 " + text
+            self.tabs.setTabText(index, text)
+
+    def update_tab_icon(self, tab, icon):
+        index = self.tabs.indexOf(tab)
+        if index != -1:
+            self.tabs.setTabIcon(index, icon)
 
     def _on_current_tab_changed(self, index):
         tab = self.tabs.widget(index)
@@ -288,6 +305,59 @@ class MainWindow(QMainWindow):
         last = self.tabs.count() - 1
         if plus_index != last:
             self.tabs.tabBar().moveTab(plus_index, last)
+
+    # -- click derecho en pestaña: enmudecer / cerrar a la derecha o izquierda --
+    def _show_tab_context_menu(self, pos):
+        bar = self.tabs.tabBar()
+        index = bar.tabAt(pos)
+        if index == -1 or self.tabs.widget(index) is self.plus_widget:
+            return
+
+        tab = self.tabs.widget(index)
+        last_real_index = self.tabs.indexOf(self.plus_widget) - 1
+
+        menu = QMenu(self)
+
+        if hasattr(tab, "page"):
+            muted = tab.page().isAudioMuted()
+            mute_action = menu.addAction("Activar sonido" if muted else "Enmudecer pestaña")
+            mute_action.triggered.connect(lambda: self._toggle_mute_tab(index))
+            menu.addSeparator()
+
+        close_right_action = menu.addAction("Cerrar pestañas a la derecha")
+        close_right_action.setEnabled(index < last_real_index)
+        close_right_action.triggered.connect(lambda: self._close_tabs_to_right(index))
+
+        close_left_action = menu.addAction("Cerrar pestañas a la izquierda")
+        close_left_action.setEnabled(index > 0)
+        close_left_action.triggered.connect(lambda: self._close_tabs_to_left(index))
+
+        menu.exec(bar.mapToGlobal(pos))
+
+    def _toggle_mute_tab(self, index):
+        tab = self.tabs.widget(index)
+        if not hasattr(tab, "page"):
+            return
+        page = tab.page()
+        page.setAudioMuted(not page.isAudioMuted())
+        self.update_tab_title(tab, tab.title())
+
+    def _close_multiple_tabs(self, indices):
+        for i in sorted(indices, reverse=True):
+            widget = self.tabs.widget(i)
+            if widget is None or widget is self.plus_widget:
+                continue
+            self.tabs.removeTab(i)
+            widget.deleteLater()
+        if self.tabs.count() <= 1:
+            self.new_tab()
+
+    def _close_tabs_to_right(self, from_index):
+        last_real_index = self.tabs.indexOf(self.plus_widget) - 1
+        self._close_multiple_tabs(range(from_index + 1, last_real_index + 1))
+
+    def _close_tabs_to_left(self, from_index):
+        self._close_multiple_tabs(range(0, from_index))
 
     def handle_new_window_request(self, request):
         tab = self.new_tab("about:blank")
@@ -324,9 +394,9 @@ class MainWindow(QMainWindow):
                 local_path = QUrl(text).toLocalFile()
             else:
                 local_path = os.path.expanduser(text)
-            # Si es uno de nuestros tipos especiales (pdf/zip/rar/7z/epub),
-            # BrowserPage.acceptNavigationRequest intercepta esta misma
-            # navegación y llama a handle_special_local_file; para el
+            # Si es uno de nuestros tipos especiales (pdf/zip/rar/7z/epub/
+            # video), BrowserPage.acceptNavigationRequest intercepta esta
+            # misma navegación y llama a handle_special_local_file; para el
             # resto (carpetas, texto, html, imágenes...) Chromium la
             # muestra directamente.
             self.current_tab().setUrl(QUrl.fromLocalFile(local_path))
@@ -355,8 +425,12 @@ class MainWindow(QMainWindow):
     def open_path_in_new_tab(self, path):
         """Abre una ruta local (usada por el diálogo de Descargas y por los
         selectores de archivo/carpeta) en una pestaña nueva."""
-        if os.path.splitext(path)[1].lower() == ".pdf":
+        ext = os.path.splitext(path)[1].lower()
+        if ext == ".pdf":
             self.open_pdf_tab(path)
+            return
+        if ext in VIDEO_EXTS:
+            self.open_video_tab(path)
             return
         tab = self.new_tab("about:blank")
         tab.setUrl(QUrl.fromLocalFile(path))
@@ -364,15 +438,22 @@ class MainWindow(QMainWindow):
     def handle_special_local_file(self, tab, local_path):
         """Llamado por BrowserPage cuando una pestaña de navegación (la
         barra de direcciones, o un clic dentro del listado nativo de una
-        carpeta file://) intenta ir a un .pdf/.zip/.rar/.7z/.epub. Acá
-        decidimos cómo mostrarlo en lugar de dejar que Chromium lo trate
-        como una descarga."""
+        carpeta file://) intenta ir a un .pdf/.zip/.rar/.7z/.epub/video.
+        Acá decidimos cómo mostrarlo en lugar de dejar que Chromium lo
+        trate como una descarga o se quede con el <video> HTML5 sin poder
+        reproducir el archivo."""
         ext = os.path.splitext(local_path)[1].lower()
         if ext == ".pdf":
             # El PDF necesita un visor propio (QtPdf), así que se abre en
             # una pestaña nueva y la pestaña que intentó navegar se deja
             # tal cual estaba.
             self.open_pdf_tab(local_path)
+            return
+        if ext in VIDEO_EXTS:
+            # Igual que el PDF: el video necesita un reproductor propio
+            # (QtMultimedia) porque el <video> HTML5 de QtWebEngine no
+            # siempre trae codecs propietarios (H.264/AAC).
+            self.open_video_tab(local_path)
             return
         self._open_local_target(tab, local_path)
 
@@ -387,12 +468,28 @@ class MainWindow(QMainWindow):
         self.db.add_history(file_url, title)
         return tab
 
+    def open_video_tab(self, path):
+        """Abre un video local en una pestaña propia con reproductor
+        nativo QtMultimedia. Se usa en vez del <video> HTML5 de Chromium
+        porque muchas builds de QtWebEngine no traen codecs propietarios
+        (H.264/AAC) y el video se queda con los controles trabados en
+        0:00 sin reproducir nada."""
+        tab = VideoTab(path, self)
+        title = os.path.basename(path)
+        short = (title[:22] + "…") if len(title) > 22 else title
+        index = self.tabs.addTab(tab, short or "Video")
+        self.tabs.setCurrentIndex(index)
+        file_url = tab.url().toString()
+        self.db.add_history(file_url, title)
+        return tab
+
     def _open_local_target(self, tab, local_path):
-        """Decide cómo mostrar una ruta local que NO es un pdf. Los .zip
-        y .7z se descomprimen y se navegan como carpeta; los .rar se
-        listan (no se pueden extraer sin una herramienta externa); los
-        .epub se abren en su primer capítulo. El resto (carpetas, .txt,
-        .html, imágenes, etc.) se lo dejamos directamente a Chromium."""
+        """Decide cómo mostrar una ruta local que NO es un pdf ni un video.
+        Los .zip y .7z se descomprimen y se navegan como carpeta; los
+        .rar se listan (no se pueden extraer sin una herramienta externa);
+        los .epub se abren en su primer capítulo. El resto (carpetas,
+        .txt, .html, imágenes, etc.) se lo dejamos directamente a
+        Chromium."""
         ext = os.path.splitext(local_path)[1].lower()
         try:
             if ext == ".zip":
@@ -457,11 +554,15 @@ class MainWindow(QMainWindow):
         self.bookmark_action.setText("★" if self.db.is_bookmarked(url) else "☆")
 
     def show_bookmarks(self):
-        items = [(title or url, url) for url, title in self.db.get_bookmarks()]
+        def build_items(query=""):
+            rows = self.db.search_bookmarks(query) if query else self.db.get_bookmarks()
+            return [(title or url, url) for url, title in rows]
+
         dialog = ListDialog(
-            "Marcadores", items,
+            "Marcadores", build_items(),
             on_open=lambda url: self.new_tab(url),
             on_delete=lambda url: self.db.remove_bookmark(url),
+            on_search=build_items,
         )
         dialog.exec()
 
@@ -527,12 +628,7 @@ class MainWindow(QMainWindow):
 
     # -- historial --------------------------------------------------------------
     def show_history(self):
-        items = [(f"{title or url}   [{ts}]", url) for url, title, ts in self.db.get_history()]
-        dialog = ListDialog(
-            "Historial", items,
-            on_open=lambda url: self.new_tab(url),
-            on_clear=self.db.clear_history,
-        )
+        dialog = HistoryDialog(self.db, on_open=lambda url: self.new_tab(url))
         dialog.exec()
 
     # -- descargas --------------------------------------------------------------

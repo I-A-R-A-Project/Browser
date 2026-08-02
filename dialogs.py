@@ -5,7 +5,7 @@ import uuid
 from PyQt6.QtWidgets import (
     QApplication, QDialog, QListWidget, QListWidgetItem, QPushButton,
     QHBoxLayout, QVBoxLayout, QMessageBox, QFileDialog, QLabel, QWidget,
-    QLineEdit, QTabWidget, QCheckBox
+    QLineEdit, QTabWidget, QCheckBox, QTreeWidget, QTreeWidgetItem,
 )
 from PyQt6.QtGui import QDesktopServices, QIcon
 from PyQt6.QtCore import Qt, QUrl, QTimer, QSize
@@ -19,19 +19,24 @@ from downloads import DownloadManager
 # Diálogo genérico de lista (historial / marcadores / juegos)
 # ---------------------------------------------------------------------------
 class ListDialog(QDialog):
-    def __init__(self, title, items, on_open=None, on_delete=None, on_clear=None):
+    def __init__(self, title, items, on_open=None, on_delete=None, on_clear=None, on_search=None):
         super().__init__()
         self.setWindowTitle(title)
         self.resize(520, 420)
         self.on_open = on_open
         self.on_delete = on_delete
+        self.on_search = on_search
 
         layout = QVBoxLayout(self)
+
+        if on_search:
+            self.search_input = QLineEdit()
+            self.search_input.setPlaceholderText("Buscar...")
+            self.search_input.textChanged.connect(self._on_search_changed)
+            layout.addWidget(self.search_input)
+
         self.list_widget = QListWidget()
-        for label, url in items:
-            item = QListWidgetItem(label)
-            item.setData(Qt.ItemDataRole.UserRole, url)
-            self.list_widget.addItem(item)
+        self._set_items(items)
         self.list_widget.itemDoubleClicked.connect(self._open_item)
         layout.addWidget(self.list_widget)
 
@@ -52,6 +57,16 @@ class ListDialog(QDialog):
 
         layout.addLayout(btn_row)
 
+    def _set_items(self, items):
+        self.list_widget.clear()
+        for label, url in items:
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, url)
+            self.list_widget.addItem(item)
+
+    def _on_search_changed(self, text):
+        self._set_items(self.on_search(text.strip()))
+
     def _open_item(self, item):
         if item and self.on_open:
             self.on_open(item.data(Qt.ItemDataRole.UserRole))
@@ -62,6 +77,79 @@ class ListDialog(QDialog):
         if item and self.on_delete:
             self.on_delete(item.data(Qt.ItemDataRole.UserRole))
             self.list_widget.takeItem(self.list_widget.row(item))
+
+
+# ---------------------------------------------------------------------------
+# Diálogo de Historial: agrupado por sesión de navegación (cada pestaña es
+# una sesión), con buscador y cada sesión desplegable para ver todas las
+# páginas visitadas en ese recorrido, no solo la última.
+# ---------------------------------------------------------------------------
+class HistoryDialog(QDialog):
+    def __init__(self, db, on_open=None):
+        super().__init__()
+        self.setWindowTitle("Historial")
+        self.resize(600, 480)
+        self.db = db
+        self.on_open = on_open
+
+        layout = QVBoxLayout(self)
+
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Buscar en el historial...")
+        self.search_input.textChanged.connect(lambda _: self._reload())
+        layout.addWidget(self.search_input)
+
+        self.tree = QTreeWidget()
+        self.tree.setHeaderHidden(True)
+        self.tree.itemDoubleClicked.connect(lambda item, _col: self._open_item(item))
+        layout.addWidget(self.tree)
+
+        btn_row = QHBoxLayout()
+        open_btn = QPushButton("Abrir")
+        open_btn.clicked.connect(lambda: self._open_item(self.tree.currentItem()))
+        btn_row.addWidget(open_btn)
+
+        clear_btn = QPushButton("Vaciar todo")
+        clear_btn.clicked.connect(self._clear_all)
+        btn_row.addWidget(clear_btn)
+
+        layout.addLayout(btn_row)
+
+        self._reload()
+
+    def _reload(self):
+        query = self.search_input.text().strip()
+        self.tree.clear()
+        sessions = self.db.get_history_grouped(search=query or None)
+        for session in sessions:
+            entries = session["entries"]
+            last_url, last_title, last_ts = entries[-1]
+            label = f"{last_title or last_url}   [{last_ts}]"
+            if len(entries) > 1:
+                label += f"  —  {len(entries)} páginas visitadas en esta sesión"
+
+            top = QTreeWidgetItem([label])
+            top.setData(0, Qt.ItemDataRole.UserRole, last_url)
+
+            for url, title, ts in entries:
+                child_label = f"{title or url}   [{ts}]"
+                child = QTreeWidgetItem([child_label])
+                child.setData(0, Qt.ItemDataRole.UserRole, url)
+                top.addChild(child)
+
+            self.tree.addTopLevelItem(top)
+
+    def _open_item(self, item):
+        if not item:
+            return
+        url = item.data(0, Qt.ItemDataRole.UserRole)
+        if url and self.on_open:
+            self.on_open(url)
+            self.accept()
+
+    def _clear_all(self):
+        self.db.clear_history()
+        self.tree.clear()
 
 
 # ---------------------------------------------------------------------------
