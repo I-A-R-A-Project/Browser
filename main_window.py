@@ -1,4 +1,4 @@
-import os
+﻿import os
 import re
 
 from PyQt6.QtWidgets import (
@@ -9,10 +9,10 @@ from PyQt6.QtGui import QAction, QKeySequence, QShortcut
 from PyQt6.QtWebEngineCore import (
     QWebEngineProfile, QWebEngineSettings, QWebEngineDownloadRequest
 )
-from PyQt6.QtCore import QUrl, Qt
+from PyQt6.QtCore import QStandardPaths, QUrl, Qt
 
 from config import (
-    APP_NAME, USERSCRIPTS_DIR, DB_PATH, PROFILE_STORAGE,
+    APP_NAME, USERSCRIPTS_DIR, DB_PATH, SESSION_FILE, PROFILE_STORAGE,
     SIDEBAR_APPS_FILE, GAMES_FILE, DEFAULT_SIDEBAR_APPS, DEFAULT_GAMES,
     GAMES_CACHE_DIR,
 )
@@ -28,6 +28,9 @@ from dialogs import ListDialog, DownloadsDialog, SettingsDialog, HistoryDialog
 from new_tab_page import render_new_tab_page
 from offline_games import OfflineGameDownloader
 import local_viewer
+from iara_common.downloader_handoff import entry_from_url, launch_downloader
+from iara_common.session import load_tab_session, save_tab_session
+from iara_common.web_profiles import build_web_profile
 
 
 class MainWindow(QMainWindow):
@@ -85,9 +88,11 @@ class MainWindow(QMainWindow):
         self._build_toolbar()
         self._build_shortcuts()
 
-        self.new_tab()
+        if not self._restore_session_or_default():
+            self.new_tab()
 
     def closeEvent(self, event):
+        self._save_session()
         pages = []
         for view in self.app_panel.views.values():
             pages.append(view.page())
@@ -106,29 +111,12 @@ class MainWindow(QMainWindow):
 
     # -- perfil con cookies persistentes y descargas -------------------------
     def _build_profile(self):
-        profile = QWebEngineProfile("MiniBrowserProfile", self)
-        profile.setPersistentStoragePath(PROFILE_STORAGE)
-        profile.setCachePath(os.path.join(PROFILE_STORAGE, "cache"))
-        profile.setPersistentCookiesPolicy(
-            QWebEngineProfile.PersistentCookiesPolicy.ForcePersistentCookies
+        profile = build_web_profile(
+            "MiniBrowserProfile",
+            self,
+            PROFILE_STORAGE,
+            os.path.join(PROFILE_STORAGE, "cache"),
         )
-        profile.setHttpUserAgent(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-        )
-        settings = profile.settings()
-        settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)
-        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalStorageEnabled, True)
-        # Permite que las páginas cargadas desde file:// (por ejemplo un
-        # archivo .txt o un listado de carpeta) puedan referenciar otros
-        # recursos locales o remotos sin ser bloqueadas.
-        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, True)
-        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
-        # Visor de PDF integrado de Chromium (permite ver .pdf directamente
-        # en la pestaña en lugar de descargarlo).
-        settings.setAttribute(QWebEngineSettings.WebAttribute.PdfViewerEnabled, True)
-        # Descarga el favicon de cada sitio para poder mostrarlo en la pestaña.
-        settings.setAttribute(QWebEngineSettings.WebAttribute.AutoLoadIconsForPage, True)
         profile.downloadRequested.connect(self.on_download_requested)
         return profile
 
@@ -252,6 +240,42 @@ class MainWindow(QMainWindow):
     def _load_new_tab_page(self, tab):
         html = render_new_tab_page(self.db.get_bookmarks())
         tab.page().setHtml(html, QUrl("about:blank"))
+
+    def _save_session(self):
+        try:
+            save_tab_session(SESSION_FILE, self.tabs, skip_widgets=(self.plus_widget,))
+        except Exception:
+            pass
+
+    def _restore_session_or_default(self):
+        session = load_tab_session(SESSION_FILE)
+        tabs = session.get("tabs") or []
+        if not tabs:
+            return False
+
+        opened = 0
+        for entry in tabs:
+            url = entry.get("url", "")
+            if not url:
+                continue
+            if url.startswith("file://"):
+                local_path = QUrl(url).toLocalFile()
+                ext = os.path.splitext(local_path)[1].lower()
+                if ext == ".pdf" or ext in VIDEO_EXTS:
+                    self.open_path_in_new_tab(local_path)
+                    opened += 1
+                    continue
+            self.new_tab(url)
+            opened += 1
+
+        if not opened:
+            return False
+
+        active_index = session.get("active_index")
+        if isinstance(active_index, int):
+            max_index = max(0, self.tabs.indexOf(self.plus_widget) - 1)
+            self.tabs.setCurrentIndex(max(0, min(active_index, max_index)))
+        return True
 
     def close_tab(self, index):
         if self.tabs.widget(index) is self.plus_widget:
@@ -633,6 +657,21 @@ class MainWindow(QMainWindow):
 
     # -- descargas --------------------------------------------------------------
     def on_download_requested(self, request: QWebEngineDownloadRequest):
+        url = request.url().toString()
+        if url and not url.startswith(("blob:", "data:", "file:")):
+            download_dir = QStandardPaths.writableLocation(
+                QStandardPaths.StandardLocation.DownloadLocation
+            ) or os.path.join(os.path.expanduser("~"), "Downloads")
+            ok, error = launch_downloader(
+                [entry_from_url(url, path=download_dir, title=request.downloadFileName())],
+                __file__,
+            )
+            if ok:
+                request.cancel()
+                self.statusBar().showMessage("Descarga enviada al Downloader", 5000)
+                return
+            self.statusBar().showMessage(error, 7000)
+
         item = self.download_manager.handle_download(request)
         self.statusBar().showMessage(f"Descargando: {item.filename}", 5000)
 
@@ -649,3 +688,6 @@ class MainWindow(QMainWindow):
         dialog.exec()
         self.script_manager.reload()
         self.refresh_sidebar()
+
+
+

@@ -1,10 +1,11 @@
-import os
+﻿import os
 
 APP_NAME = "MiniBrowser"
 
 BASE_DIR = os.path.join(os.path.expanduser("~"), ".minibrowser")
 USERSCRIPTS_DIR = os.path.join(BASE_DIR, "userscripts")
 DB_PATH = os.path.join(BASE_DIR, "browser.db")
+SESSION_FILE = os.path.join(BASE_DIR, "session.json")
 PROFILE_STORAGE = os.path.join(BASE_DIR, "profile")
 ICONS_DIR = os.path.join(BASE_DIR, "icons")
 
@@ -35,3 +36,5 @@ for _dir in (BASE_DIR, USERSCRIPTS_DIR, PROFILE_STORAGE, ICONS_DIR, ARCHIVES_CAC
 DEFAULT_SIDEBAR_APPS = []
 
 DEFAULT_GAMES = []
+
+
