@@ -1,5 +1,4 @@
-﻿import os
-import re
+import os
 
 from PyQt6.QtWidgets import (
     QMainWindow, QTabWidget, QToolBar, QLineEdit, QFileDialog, QWidget,
@@ -17,20 +16,21 @@ from config import (
     GAMES_CACHE_DIR,
 )
 from database import Database
-from json_store import SidebarAppsStore, GamesStore
 from userscripts import UserScriptManager
 from downloads import DownloadManager
 from browser_tab import BrowserTab, VIDEO_EXTS
-from pdf_tab import PdfTab
-from video_tab import VideoTab
-from sidebar import SidebarRail, AppPanelOverlay, SidebarContainer
 from dialogs import ListDialog, DownloadsDialog, SettingsDialog, HistoryDialog
 from new_tab_page import render_new_tab_page
 from offline_games import OfflineGameDownloader
-import local_viewer
-from iara_common.downloader_handoff import entry_from_url, launch_downloader
-from iara_common.session import load_tab_session, save_tab_session
-from iara_common.web_profiles import build_web_profile
+from web_common import local_viewer
+from web_common.navbar import BasicNavbar, address_to_url, save_web_page
+from web_common.downloader_handoff import entry_from_url, launch_downloader
+from web_common.json_store import SidebarAppsStore, GamesStore
+from web_common.pdf_tab import PdfTab
+from web_common.session import load_tab_session, save_tab_session
+from web_common.sidebar import SidebarRail, AppPanelOverlay, SidebarContainer
+from web_common.video_tab import VideoTab
+from web_common.web_profiles import build_web_profile
 
 
 class MainWindow(QMainWindow):
@@ -143,72 +143,68 @@ class MainWindow(QMainWindow):
 
     # -- toolbar --------------------------------------------------------------
     def _build_toolbar(self):
-        toolbar = QToolBar("Navegación")
-        toolbar.setMovable(False)
-        self.addToolBar(toolbar)
+        navbar = BasicNavbar(self)
+        navbar.on_back = lambda: self.current_tab().back()
+        navbar.on_forward = lambda: self.current_tab().forward()
+        navbar.on_reload = lambda: self.current_tab().reload()
+        navbar.on_stop = lambda: self.current_tab().stop()
+        navbar.on_address_bar_enter = self.navigate_to_address
+        navbar.on_save_page = lambda: save_web_page(
+            self.current_tab(),
+            target_dir=Path(__file__).resolve().parent / "saved_pages",
+            status_callback=self.statusBar().showMessage,
+        )
 
-        back_action = QAction("←", self)
-        back_action.setToolTip("Atras")
-        back_action.triggered.connect(lambda: self.current_tab().back())
-        toolbar.addAction(back_action)
-
-        forward_action = QAction("→", self)
-        forward_action.setToolTip("Adelante")
-        forward_action.triggered.connect(lambda: self.current_tab().forward())
-        toolbar.addAction(forward_action)
-
-        reload_action = QAction("⟳", self)
-        reload_action.setToolTip("Recargar pagina")
-        reload_action.triggered.connect(lambda: self.current_tab().reload())
-        toolbar.addAction(reload_action)
-
-        self.address_bar = QLineEdit()
-        self.address_bar.returnPressed.connect(self.navigate_to_address)
-        toolbar.addWidget(self.address_bar)
-
-        self.bookmark_action = QAction("☆", self)
+        # Guardar referencia a address_bar
+        self.address_bar = navbar.address_bar
+        
+        # Agregar bookmark ☆ entre direccion y otros botones
+        self.bookmark_action = QAction("☆", navbar)
         self.bookmark_action.triggered.connect(self.toggle_bookmark)
-        toolbar.addAction(self.bookmark_action)
-
-        bookmarks_action = QAction("🔖", self)
+        navbar.addAction(self.bookmark_action)
+        
+        # Agregar botones especificos de Browser
+        bookmarks_action = QAction("🔖", navbar)
         bookmarks_action.setToolTip("Marcadores")
         bookmarks_action.triggered.connect(self.show_bookmarks)
-        toolbar.addAction(bookmarks_action)
+        navbar.addAction(bookmarks_action)
 
-        games_action = QAction("🎮", self)
+        games_action = QAction("🎮", navbar)
         games_action.setToolTip("Juegos")
         games_action.triggered.connect(self.show_games)
-        toolbar.addAction(games_action)
+        navbar.addAction(games_action)
 
-        history_action = QAction("🕖", self)
+        history_action = QAction("🕖", navbar)
         history_action.setToolTip("Historial")
         history_action.triggered.connect(self.show_history)
-        toolbar.addAction(history_action)
+        navbar.addAction(history_action)
 
-        downloads_action = QAction("📥", self)
+        downloads_action = QAction("📥", navbar)
         downloads_action.setToolTip("Descargas")
         downloads_action.triggered.connect(self.show_downloads)
-        toolbar.addAction(downloads_action)
+        navbar.addAction(downloads_action)
 
-        sidebar_toggle = QAction("▥", self)
+        sidebar_toggle = QAction("▥", navbar)
         sidebar_toggle.setToolTip("Mostrar/ocultar barra lateral")
         sidebar_toggle.setCheckable(True)
         sidebar_toggle.setChecked(True)
         sidebar_toggle.toggled.connect(self.toggle_sidebar_visibility)
-        toolbar.addAction(sidebar_toggle)
+        navbar.addAction(sidebar_toggle)
 
-        zoom_in = QAction("🔎+", self)
+        zoom_in = QAction("🔎+", navbar)
         zoom_in.triggered.connect(lambda: self.adjust_zoom(0.1))
-        toolbar.addAction(zoom_in)
+        navbar.addAction(zoom_in)
 
-        zoom_out = QAction("🔎-", self)
+        zoom_out = QAction("🔎-", navbar)
         zoom_out.triggered.connect(lambda: self.adjust_zoom(-0.1))
-        toolbar.addAction(zoom_out)
+        navbar.addAction(zoom_out)
 
-        settings_action = QAction("⚙", self)
+        settings_action = QAction("⚙", navbar)
         settings_action.setToolTip("Ajustes y personalizaciones")
         settings_action.triggered.connect(self.show_settings)
-        toolbar.addAction(settings_action)
+        navbar.addAction(settings_action)
+        
+        self.addToolBar(navbar)
 
     def _build_shortcuts(self):
         QShortcut(QKeySequence("Ctrl+T"), self, activated=lambda: self.new_tab())
@@ -396,43 +392,23 @@ class MainWindow(QMainWindow):
         self.address_bar.setCursorPosition(0)
         self._refresh_bookmark_icon(text)
 
-    # Ruta de Windows (C:\..., C:/...) o Unix (/..., ~/...)
-    _WINDOWS_PATH_RE = re.compile(r"^[a-zA-Z]:[\\/]")
-
-    def _looks_like_local_path(self, text):
-        if text.startswith("file://"):
-            return True
-        if self._WINDOWS_PATH_RE.match(text):
-            return True
-        if text.startswith("/") or text.startswith("~"):
-            return True
-        return False
-
-    def navigate_to_address(self):
+    def navigate_to_address(self, text: str):
         text = self.address_bar.text().strip()
         if not text:
             return
 
-        if self._looks_like_local_path(text):
-            if text.startswith("file://"):
-                local_path = QUrl(text).toLocalFile()
-            else:
-                local_path = os.path.expanduser(text)
+        url = address_to_url(text, search_url="https://www.google.com/search?q={query}")
+        if url is None:
+            return
+        if url.isLocalFile():
             # Si es uno de nuestros tipos especiales (pdf/zip/rar/7z/epub/
             # video), BrowserPage.acceptNavigationRequest intercepta esta
             # misma navegación y llama a handle_special_local_file; para el
             # resto (carpetas, texto, html, imágenes...) Chromium la
             # muestra directamente.
-            self.current_tab().setUrl(QUrl.fromLocalFile(local_path))
+            self.current_tab().setUrl(url)
             return
 
-        if "." in text and " " not in text:
-            if not text.startswith(("http://", "https://")):
-                text = "https://" + text
-            url = QUrl(text)
-        else:
-            query = QUrl.toPercentEncoding(text).data().decode()
-            url = QUrl(f"https://www.google.com/search?q={query}")
         self.current_tab().setUrl(url)
 
     # -- abrir archivos/carpetas locales --------------------------------------

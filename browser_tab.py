@@ -1,7 +1,7 @@
 ﻿from PyQt6.QtCore import QUrl
 
 from userscripts import UserScriptManager
-from iara_common.tabs import SPECIAL_LOCAL_EXTS, VIDEO_EXTS, UnifiedWebEnginePage, UnifiedWebTab
+from web_common.tabs import SPECIAL_LOCAL_EXTS, VIDEO_EXTS, UnifiedWebEnginePage, UnifiedWebTab
 
 BrowserPage = UnifiedWebEnginePage
 
